@@ -1,0 +1,137 @@
+#include <WiFi.h>
+#include <FirebaseESP32.h>
+#include <PZEM004Tv30.h>
+
+// ---------- Wi-Fi credentials ----------
+#define WIFI_SSID "Galaxy A51 1ECA"
+#define WIFI_PASSWORD "sliz5625"
+
+// ---------- Firebase ----------
+#define API_KEY "AIzaSyACjQr_2dWwBD0O1gcXiEFTjY9aUKdaHKg"
+#define DATABASE_URL "https://elcb-c77d5-default-rtdb.asia-southeast1.firebasedatabase.app"
+#define DATABASE_SECRET "AUcxLpDgfxjlAHnCB2GTdJRWLgNsCn1AljgDHH1d"
+
+// ---------- Firebase objects ----------
+FirebaseData firebaseData;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+// ---------- PZEM004T setup ----------
+HardwareSerial mySerial(2);
+PZEM004Tv30 pzem1(mySerial, 26, 25);  // RX, TX
+
+#define DEVICE_ID "IT01L002"
+const float VOLTAGE_THRESHOLD = 150.0;
+const float POWER_THRESHOLD = 1.0;
+const float CURRENT_THRESHOLD = 0.05;
+
+float VOLTAGE, CURRENT, POWER, energy1, Freq, pf1, va1, VAR1;
+String status, fault;
+
+void setup() {
+  Serial.begin(9600);
+  mySerial.begin(9600, SERIAL_8N1, 26, 25);  // Initialize PZEM
+
+  // Connect to WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.print("Connecting to Wi-Fi");
+  while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
+    delay(500);
+  }
+  Serial.println("\n✅ Wi-Fi Connected");
+
+  // Firebase config
+  config.api_key = API_KEY;
+  config.database_url = DATABASE_URL;
+  config.signer.tokens.legacy_token = DATABASE_SECRET;  // ✅ Add this
+
+  Firebase.begin(&config, &auth);
+  Firebase.reconnectWiFi(true);
+
+  // Wait until Firebase is ready
+  Serial.println("⏳ Connecting to Firebase...");
+  unsigned long startTime = millis();
+  while (!Firebase.ready() && millis() - startTime < 10000) {
+    Serial.print(".");
+    delay(300);
+  }
+
+  if (Firebase.ready()) {
+    Serial.println("\n✅ Firebase is ready.");
+  } else {
+    Serial.println("\n❌ Firebase not ready.");
+  }
+}
+
+void loop() {
+  VOLTAGE = zeroIfNan(pzem1.voltage());
+  CURRENT = zeroIfNan(pzem1.current());
+  POWER = zeroIfNan(pzem1.power());
+  energy1 = zeroIfNan(pzem1.energy() / 1000);
+  Freq = zeroIfNan(pzem1.frequency());
+  pf1 = zeroIfNan(pzem1.pf());
+
+  if (POWER < POWER_THRESHOLD) POWER = 0;
+  if (CURRENT < CURRENT_THRESHOLD) CURRENT = 0;
+
+  if (pf1 == 0) {
+    va1 = 0;
+    VAR1 = 0;
+  } else {
+    va1 = POWER / pf1;
+    VAR1 = va1 * sqrt(1 - sq(pf1));
+  }
+
+  if (VOLTAGE > VOLTAGE_THRESHOLD) {
+    if (POWER >= POWER_THRESHOLD) {
+      status = "ON";
+      fault = "NO";
+    } else {
+      status = "OFF";
+      fault = "YES (Bulb Missing)";
+    }
+  } else {
+    status = "OFF";
+    fault = "NO (No Power)";
+  }
+
+  String path = "/Devices/" + String(DEVICE_ID);
+  uploadFloat(path + "/Voltage", VOLTAGE);
+  uploadFloat(path + "/Current", CURRENT);
+  uploadFloat(path + "/Power", POWER);
+  uploadFloat(path + "/Frequency", Freq);
+  uploadFloat(path + "/PowerFactor", pf1);
+  uploadFloat(path + "/Energy", energy1);
+  uploadFloat(path + "/ApparentPower", va1);
+  uploadFloat(path + "/ReactivePower", VAR1);
+  uploadString(path + "/Status", status);
+  uploadString(path + "/Fault", fault);
+
+  delay(5000);
+}
+
+// ---------- Helper functions ----------
+float zeroIfNan(float val) {
+  return isnan(val) ? 0 : val;
+}
+
+void uploadFloat(String path, float value) {
+  if (!Firebase.setFloat(firebaseData, path, value)) {
+    Serial.print("❌ Error uploading "); Serial.print(path);
+    Serial.print(": "); Serial.println(firebaseData.errorReason());
+  } else {
+    Serial.print("✅ Uploaded "); Serial.print(path);
+    Serial.print(": "); Serial.println(value);
+  }
+}
+
+void uploadString(String path, String value) {
+  if (!Firebase.setString(firebaseData, path, value)) {
+    Serial.print("❌ Error uploading "); Serial.print(path);
+    Serial.print(": "); Serial.println(firebaseData.errorReason());
+  } else {
+    Serial.print("✅ Uploaded "); Serial.print(path);
+    Serial.print(": "); Serial.println(value);
+  }
+}

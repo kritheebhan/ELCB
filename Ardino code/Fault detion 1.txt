@@ -1,0 +1,82 @@
+#include <PZEM004Tv30.h>
+
+// Use Serial2 on ESP32 with custom TX/RX pins
+HardwareSerial mySerial(2);
+PZEM004Tv30 pzem1(mySerial, 26, 25); // GPIO26 (RX2) to TX PZEM004; GPIO25 (TX2) to RX PZEM004
+
+// Constants
+#define DEVICE_ID "BULB_1"
+const float VOLTAGE_THRESHOLD = 150.0;   // Min voltage to detect supply
+const float POWER_THRESHOLD = 1.0;       // Real load should be above 1W
+const float CURRENT_THRESHOLD = 0.05;    // Real current should be above 0.05A
+
+// Variables
+float VOLTAGE, CURRENT, POWER, energy1, Freq, pf1, va1, VAR1;
+String status, fault;
+
+void setup() {
+    Serial.begin(115200);
+    Serial.println("\nPZEM004T Testing on ESP32");
+
+    // Start Serial2 for communication with PZEM
+    mySerial.begin(9600, SERIAL_8N1, 26, 25);
+}
+
+void loop() {
+    // Read values
+    VOLTAGE = zeroIfNan(pzem1.voltage());
+    CURRENT = zeroIfNan(pzem1.current());
+    POWER = zeroIfNan(pzem1.power());
+    energy1 = zeroIfNan(pzem1.energy() / 1000); // Convert to kWh
+    Freq = zeroIfNan(pzem1.frequency());
+    pf1 = zeroIfNan(pzem1.pf());
+
+    // Filter out ghost readings
+    if (POWER < POWER_THRESHOLD) POWER = 0;
+    if (CURRENT < CURRENT_THRESHOLD) CURRENT = 0;
+
+    // Calculate Apparent and Reactive Power
+    if (pf1 == 0) {
+        va1 = 0;
+        VAR1 = 0;
+    } else {
+        va1 = (POWER / pf1);
+        VAR1 = va1 * sqrt(1 - sq(pf1));
+    }
+
+    // Fault & status logic
+ if (VOLTAGE > VOLTAGE_THRESHOLD) {
+    if (POWER >= POWER_THRESHOLD) {
+        status = "ON";
+        fault = "NO";
+    } else {
+        status = "OFF";
+        fault = "YES (Bulb Missing)";
+    }
+} else {
+    status = "OFF";
+    fault = "NO (No Power)";
+}
+
+
+    // Print values
+    Serial.println("");
+    Serial.printf("Device ID       : %s\n", DEVICE_ID);
+    Serial.printf("Voltage         : %.2f V\n", VOLTAGE);
+    Serial.printf("Current         : %.2f A\n", CURRENT);
+    Serial.printf("Power Active    : %.2f W\n", POWER);
+    Serial.printf("Frequency       : %.2f Hz\n", Freq);
+    Serial.printf("Power Factor    : %.2f PF\n", pf1);
+    Serial.printf("Energy Consumed : %.2f kWh\n", energy1);
+    Serial.printf("Apparent Power  : %.2f VA\n", va1);
+    Serial.printf("Reactive Power  : %.2f VAR\n", VAR1);
+    Serial.printf("Bulb Status     : %s\n", status.c_str());
+    Serial.printf("Fault Detected  : %s\n", fault.c_str());
+    Serial.println("--------------------------------");
+
+    delay(1000);
+}
+
+float zeroIfNan(float v) {
+    return isnan(v) ? 0 : v;
+}
